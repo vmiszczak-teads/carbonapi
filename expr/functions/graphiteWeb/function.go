@@ -78,8 +78,8 @@ func paramsIsEqual(first, second []types.FunctionParam) bool {
 func New(configFile string) []interfaces.FunctionMetadata {
 	logger := zapwriter.Logger("functionInit").With(zap.String("function", "graphiteWeb"))
 	if configFile == "" {
-		logger.Warn("no config file specified",
-			zap.String("message", "this function requrires config file to work properly"),
+		logger.Info("no config file specified",
+			zap.String("message", "this function requires config file to work properly"),
 		)
 		return nil
 	}
@@ -108,7 +108,7 @@ func New(configFile string) []interfaces.FunctionMetadata {
 	}
 
 	if !cfg.Enabled {
-		logger.Warn("graphiteWeb config found but graphiteWeb proxy is disabled")
+		logger.Info("config file found, but function is disabled")
 		return nil
 	}
 
