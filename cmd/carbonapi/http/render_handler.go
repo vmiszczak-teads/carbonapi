@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-graphite/carbonapi/cache"
+
 	"github.com/ansel1/merry"
 	"github.com/go-graphite/carbonapi/carbonapipb"
 	"github.com/go-graphite/carbonapi/cmd/carbonapi/config"
@@ -243,14 +245,13 @@ func renderHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	errors := make(map[string]merry.Error)
 	backendCacheKey := backendCacheComputeKey(from, until, targets)
-	results, err := backendCacheFetchResults(logger, useCache, backendCacheKey, accessLogDetails)
-
-	if err != nil {
+	// storeFunc computes from query and stores the results in the backend cache
+	storeFunc := func() ([]*types.MetricData, map[string]merry.Error) {
 		ApiMetrics.BackendCacheMisses.Add(1)
 
-		results = make([]*types.MetricData, 0)
+		results := make([]*types.MetricData, 0)
+		errors := make(map[string]merry.Error)
 		values := make(map[parser.MetricRequest][]*types.MetricData)
 
 		for _, target := range targets {
@@ -259,7 +260,7 @@ func renderHandler(w http.ResponseWriter, r *http.Request) {
 				msg := buildParseErrorString(target, e, err)
 				setError(w, accessLogDetails, msg, http.StatusBadRequest)
 				logAsError = true
-				return
+				return nil, nil
 			}
 
 			ApiMetrics.RenderRequests.Add(1)
@@ -279,6 +280,21 @@ func renderHandler(w http.ResponseWriter, r *http.Request) {
 		if len(errors) == 0 {
 			backendCacheStoreResults(logger, backendCacheKey, results, backendCacheTimeout)
 		}
+		return results, errors
+	}
+
+	var results []*types.MetricData
+	var errors map[string]merry.Error
+	if config.Config.BackendCacheConfig.DogpileProtection {
+		results, errors = backendCacheGetOrSetExclusive(logger, backendCacheKey, storeFunc)
+	} else {
+		results, err = backendCacheFetchResults(logger, useCache, backendCacheKey, accessLogDetails)
+		if err != nil {
+			results, errors = storeFunc()
+		}
+	}
+	if results == nil && err == nil {
+		return
 	}
 
 	size := 0
@@ -378,6 +394,68 @@ func backendCacheComputeKey(from, until string, targets []string) string {
 	return backendCacheKey.String()
 }
 
+// backendCacheGetOrSetExclusive tries to retrieves data from the cache
+// when the data does not exist, it determines if the value must be computed locally, or if someone else is already computing this value in which case it waits for the value to be available until timeout
+func backendCacheGetOrSetExclusive(logger *zap.Logger, key string, storeFunc func() ([]*types.MetricData, map[string]merry.Error)) ([]*types.MetricData, map[string]merry.Error) {
+	timeout := time.NewTicker(time.Duration(config.Config.BackendCacheConfig.DogpileProtectionLockTimeoutSec) * time.Second)
+	defer timeout.Stop()
+
+	for {
+		// check the timeout
+		select {
+		case <-timeout.C:
+			logger.Warn("Could not fetch backendCache data within timeout")
+			// we could not get data from cache within timeout, we compute the value and store in the cache
+			return storeFunc()
+		default:
+		}
+
+		// try to fetch the value from cache
+		backendCacheResults, err := config.Config.BackendCache.Get(key)
+		// there is no cache, try to acquire a lock
+		if err == cache.ErrNotFound {
+			lockKey := key + " lock"
+			err := config.Config.BackendCache.Add(lockKey, []byte("lock"), config.Config.BackendCacheConfig.DogpileProtectionLockTimeoutSec)
+			// we could not acquire the lock
+			if err == cache.ErrAlreadySet {
+				// wait a little bit for someone else to compute the value
+				time.Sleep(time.Duration(config.Config.BackendCacheConfig.DogpileProtectionRetryDelayMs) * time.Millisecond)
+				continue
+			}
+
+			// we have the lock
+			defer config.Config.BackendCache.Del(lockKey)
+
+			// check again that the value was not set since our previous check
+			backendCacheResults, err = config.Config.BackendCache.Get(key)
+			// let's compute the value
+			if err == cache.ErrNotFound {
+				return storeFunc()
+			}
+		}
+
+		if err != nil {
+			return storeFunc()
+		}
+
+		// we have data in the cache
+		metrics, err := bytesToMetricsData(backendCacheResults)
+		if err != nil {
+			return storeFunc()
+		}
+
+		return metrics, nil
+	}
+}
+
+func bytesToMetricsData(data []byte) ([]*types.MetricData, error) {
+	var results []*types.MetricData
+	cacheDecodingBuf := bytes.NewBuffer(data)
+	dec := gob.NewDecoder(cacheDecodingBuf)
+	err := dec.Decode(&results)
+	return results, err
+}
+
 func backendCacheFetchResults(logger *zap.Logger, useCache bool, backendCacheKey string, accessLogDetails *carbonapipb.AccessLogDetails) ([]*types.MetricData, error) {
 	if !useCache {
 		return nil, errors.New("useCache is false")
@@ -389,11 +467,7 @@ func backendCacheFetchResults(logger *zap.Logger, useCache bool, backendCacheKey
 		return nil, err
 	}
 
-	var results []*types.MetricData
-	cacheDecodingBuf := bytes.NewBuffer(backendCacheResults)
-	dec := gob.NewDecoder(cacheDecodingBuf)
-	err = dec.Decode(&results)
-
+	results, err := bytesToMetricsData(backendCacheResults)
 	if err != nil {
 		logger.Error("Error decoding cached backend results")
 		return nil, err

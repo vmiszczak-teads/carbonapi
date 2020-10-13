@@ -47,6 +47,7 @@ Table of Contents
     * [Example](#example-19)
       * [For go\-carbon and prometheus](#for-go-carbon-and-prometheus)
       * [For graphite\-clickhouse](#for-graphite-clickhouse)
+      * [For metrictank](#for-metrictank)
   * [expireDelaySec](#expiredelaysec)
     * [Example](#example-20)
 
@@ -236,9 +237,14 @@ cache:
 ## backendCache
 Specify what storage to use for backend cache. This cache stores the responses
 from the backends. It should have more cache hits than the response cache since
-the response format and the maxDataPoints paramter are not part of the cache
+the response format and the maxDataPoints parameter are not part of the cache
 key, but results from cache still need to be postprocessed (e.g. serialized to
-desired response format).
+desired response format).  
+
+When using `memcache`, you can prevent [dogpile effect](https://en.wikipedia.org/wiki/Cache_stampede) with `dogpileProtection*` opt-in settings (disabled by default).  
+If enabled, multiple `carbonapi` threads or servers won't try to fetch the data from backends if the same request is already being computed somewhere else.  
+For instance, it's usefull when you have a bunch of servers, long running queries and multiple users accessing the same dashboards/queries.    
+Those settings have no effect outside of `memcache` cache backend.
 
 Supports same options as the response cache.
 ### Example
@@ -250,6 +256,9 @@ backendCache:
    memcachedServers:
        - "127.0.0.1:1234"
        - "127.0.0.2:1235"
+  dogpileProtection: true # default is false
+  dogpileProtectionLockTimeoutSec: 60 # this is the default value
+  dogpileProtectionRetryDelayMs: 100 # this is the default value
 ```
 ***
 ## cpus
@@ -541,7 +550,7 @@ Supported options:
            * `protocol` - specify protocol for the backend.
            
              Supported protocols:
-               * `carbonapi_v3_pb` - new native protocol, over http. Should be fastest. Currently supported only by [lomik/go-carbon](https://github.com/lomik/go-carbon) and [go-graphite/carbonapi](https://github.com/go-graphite/carbonapi)
+               * `carbonapi_v3_pb` - new native protocol, over http. Should be fastest. Currently supported by [lomik/go-carbon](https://github.com/lomik/go-carbon), [lomik/graphite-clickhouse](https://github.com/lomik/graphite-clickhouse) and [go-graphite/carbonapi](https://github.com/go-graphite/carbonapi)
                * `carbonapi_v3_grpc` - new experimental protocol that instead of HTTP requests, uses gRPC. No known backend support that.
                * `carbonapi_v2_pb`, `protobuf`, `pb`, `pb3` - older protobuf-based protocol. Supported by [lomik/go-carbon](https://github.com/lomik/go-carbon) and [lomik/graphite-clickhouse](https://github.com/lomik/graphite-clickhouse)
                * `msgpack` - message pack encoding, supported by [graphite-project/graphite-web](https://github.com/graphite-project/graphite-web) and [grafana/metrictank](https://github.com/grafana/metrictank)
@@ -687,7 +696,7 @@ upstreams:
         backends:
           -
             groupName: "clickhouse-cluster1"
-            protocol: "carbonapi_v2_pb"
+            protocol: "carbonapi_v2_pb" # "carbonapi_v3_pb" for the latest master
             lbMethod: "rr"
             maxTries: 3
             maxBatchSize: 0
@@ -703,7 +712,7 @@ upstreams:
                 - "http://192.168.0.2:8080"
           -
             groupName: "clickhouse-cluster2"
-            protocol: "carbonapi_v2_pb"
+            protocol: "carbonapi_v2_pb" # "carbonapi_v3_pb" for the latest master
             lbMethod: "rr"
             maxTries: 3
             maxBatchSize: 0
@@ -716,6 +725,53 @@ upstreams:
             servers:
                 - "http://192.168.0.3:8080"
                 - "http://192.168.0.4:8080"
+```
+
+#### For metrictank
+```yaml
+upstreams:
+    graphite09compat: false
+    buckets: 10
+
+    concurrencyLimitPerServer: 0
+    keepAliveInterval: "30s"
+    maxIdleConnsPerHost: 100
+    timeouts:
+        find: "2s"
+        render: "10s"
+        connect: "200ms"
+
+    #backends section will override this one!
+    backendsv2:
+        backends:
+          -
+            groupName: "metrictank"
+            protocol: "msgpack"
+            lbMethod: "rr"
+            maxTries: 3
+            maxBatchSize: 0
+            keepAliveInterval: "10s"
+            concurrencyLimit: 0
+            maxIdleConnsPerHost: 1000
+            timeouts:
+                find: "2s"
+                render: "50s"
+                connect: "200ms"
+            servers:
+                - "http://192.168.0.1:6060"
+                - "http://192.168.0.2:6060"
+          -
+            groupName: "graphite-web"
+            protocol: "msgpack"
+            lbMethod: "broadcast"
+            maxTries: 3
+            maxBatchSize: 0
+            keepAliveInterval: "10s"
+            concurrencyLimit: 0
+            maxIdleConnsPerHost: 1000
+            servers:
+                - "http://192.168.0.3:8080?format=msgpack"
+                - "http://192.168.0.4:8080?format=msgpack"
 ```
 
 ***

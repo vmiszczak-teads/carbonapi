@@ -23,10 +23,13 @@ var DefaultLoggerConfig = zapwriter.Config{
 }
 
 type CacheConfig struct {
-	Type              string   `mapstructure:"type"`
-	Size              int      `mapstructure:"size_mb"`
-	MemcachedServers  []string `mapstructure:"memcachedServers"`
-	DefaultTimeoutSec int32    `mapstructure:"defaultTimeoutSec"`
+	Type                            string   `mapstructure:"type"`
+	Size                            int      `mapstructure:"size_mb"`
+	MemcachedServers                []string `mapstructure:"memcachedServers"`
+	DefaultTimeoutSec               int32    `mapstructure:"defaultTimeoutSec"`
+	DogpileProtection               bool     `mapstructure:"dogpileProtection"`
+	DogpileProtectionLockTimeoutSec int32    `mapstructure:"dogpileProtectionLockTimeoutSec"`
+	DogpileProtectionRetryDelayMs   int      `mapstructure:"dogpileProtectionRetryDelayMs"`
 }
 
 type GraphiteConfig struct {

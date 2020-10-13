@@ -15,19 +15,24 @@ import (
 )
 
 var (
-	ErrTimeout  = errors.New("cache: timeout")
-	ErrNotFound = errors.New("cache: not found")
+	ErrTimeout    = errors.New("cache: timeout")
+	ErrNotFound   = errors.New("cache: not found")
+	ErrAlreadySet = errors.New("cache: already set")
 )
 
 type BytesCache interface {
 	Get(k string) ([]byte, error)
 	Set(k string, v []byte, expire int32)
+	Add(k string, v []byte, expire int32) error
+	Del(k string)
 }
 
 type NullCache struct{}
 
-func (NullCache) Get(string) ([]byte, error) { return nil, ErrNotFound }
-func (NullCache) Set(string, []byte, int32)  {}
+func (NullCache) Get(string) ([]byte, error)      { return nil, ErrNotFound }
+func (NullCache) Set(string, []byte, int32)       {}
+func (NullCache) Add(string, []byte, int32) error { return nil }
+func (NullCache) Del(string)                      {}
 
 func NewExpireCache(maxsize uint64) BytesCache {
 	ec := expirecache.New(maxsize)
@@ -49,6 +54,10 @@ func (ec ExpireCache) Get(k string) ([]byte, error) {
 	return v.([]byte), nil
 }
 
+func (ec ExpireCache) Add(string, []byte, int32) error { return nil }
+
+func (ec ExpireCache) Del(string) {}
+
 func (ec ExpireCache) Set(k string, v []byte, expire int32) {
 	ec.ec.Set(k, v, uint64(len(v)), expire)
 }
@@ -65,6 +74,22 @@ type MemcachedCache struct {
 	prefix   string
 	client   *memcache.Client
 	timeouts uint64
+}
+
+func (m *MemcachedCache) Add(k string, v []byte, expire int32) error {
+	key := sha1.Sum([]byte(k))
+	hk := hex.EncodeToString(key[:])
+	if err := m.client.Add(&memcache.Item{Key: m.prefix + hk, Value: v, Expiration: expire}); err == memcache.ErrNotStored {
+		return ErrAlreadySet
+	}
+
+	return nil
+}
+
+func (m *MemcachedCache) Del(k string) {
+	key := sha1.Sum([]byte(k))
+	hk := hex.EncodeToString(key[:])
+	go m.client.Delete(m.prefix + hk)
 }
 
 func (m *MemcachedCache) Get(k string) ([]byte, error) {

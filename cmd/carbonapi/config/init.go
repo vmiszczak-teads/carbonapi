@@ -159,6 +159,11 @@ func SetUpConfig(logger *zap.Logger, BuildVersion string) {
 
 	Config.ResponseCache = createCache(logger, "cache", Config.ResponseCacheConfig)
 	Config.BackendCache = createCache(logger, "backendCache", Config.BackendCacheConfig)
+	if Config.BackendCacheConfig.DogpileProtection && Config.BackendCacheConfig.Type != "memcache" {
+		// dogpile protection is only effective for memcache
+		Config.BackendCacheConfig.DogpileProtection = false
+		logger.Warn("dogpile protection is enabled in the config but the cache type is not memcache, this has no effect")
+	}
 
 	if Config.TimezoneString != "" {
 		fields := strings.Split(Config.TimezoneString, ",")
@@ -310,6 +315,8 @@ func SetUpViper(logger *zap.Logger, configPath *string, viperPrefix string) {
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.BindEnv("tz", "carbonapi_tz")
 	viper.SetDefault("listen", "localhost:8081")
+	viper.SetDefault("backendCache.dogpileProtectionLockTimeoutSec", 60)
+	viper.SetDefault("backendCache.dogpileProtectionRetryDelayMs", 100)
 	viper.SetDefault("concurency", 20)
 	viper.SetDefault("cache.type", "mem")
 	viper.SetDefault("cache.size_mb", 0)
